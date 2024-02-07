@@ -4,7 +4,7 @@ from typing import overload, Iterable
 
 import h5py
 import tempfile
-
+import os
 import numpy as np
 
 
@@ -14,16 +14,28 @@ class FileFloatList(MutableSequence[float]):
 
         self._size      = 0
         self._increment = increment
-        self._temp      = tempfile.TemporaryFile()
+        self._temp      = tempfile.NamedTemporaryFile(dir=os.path.curdir)
         self._file      = h5py.File(name=self._temp, mode="a")
 
         if copy_from is None:
-            self._data  = self._file.create_dataset(name="list", shape=(initial_size,), maxshape=(None,), dtype=float)
+            self._data  = self._file.create_dataset(name="list", shape=(initial_size,), maxshape=(None,), dtype=float, chunks=True)
         else:
-            self._data    = self._file.create_dataset("list", (len(copy_from),), maxshape=(None,), dtype=float)
+            self._data    = self._file.create_dataset("list", (len(copy_from),), maxshape=(None,), dtype=float, chunks=True)
             self._data[:] = copy_from
             self._size    = len(copy_from)
 
+
+    def __del__(self):
+
+        try:
+            self._file.close()
+        except:
+            ...
+
+        try:
+            self._temp.close()
+        except:
+            ...
 
     def copy(self):
 
@@ -39,22 +51,28 @@ class FileFloatList(MutableSequence[float]):
     def _ensure_space(self, size: int = -1):
 
         if size > self._data.size:
-            self._data.resize(self._data.size + self._increment)
+            self._data.resize((max(size, self._data.size + self._increment),))
 
 
     def extend(self, __iterable):
-        for x in __iterable:
-            self.append(x)
+
+        sz = len(__iterable)
+        self._ensure_space(self._size + sz)
+        self._data[(self._size):(self._size + sz)] = __iterable
+        self._size += sz
 
 
     def pop(self, __index=-1):
 
+        if __index < 0:
+            __index = self._size + __index
+
         item = self[__index]
 
         if __index == -1:
-            self._move_chunk(start=self._size - 1, spaces=-1)
+            self._move_chunk(start=self._size, spaces=-1)
         else:
-            self._move_chunk(start=__index, spaces=-1)
+            self._move_chunk(start=__index+1, spaces=-1)
 
         return item
 
@@ -85,39 +103,39 @@ class FileFloatList(MutableSequence[float]):
 
 
     def index(self, __value, __start=0, __stop=sys.maxsize):
-        
+
         for i in range(__start, min(self._size, __stop)):
             if self[i] == __value:
                 return i
-        
+
         return -1
 
 
     def count(self, __value):
-        
+
         count = 0
 
         for thing in self:
 
             if (thing == __value):
                 count += 1
-            
+
         return count
 
 
     def insert(self, __index, __object):
-        
+
         self._move_chunk(__index, +1)
         self[__index] = __object
 
 
 
     def remove(self, __value):
-        
+
         for i in range(0, self._size):
             if self[i] == __value:
                 self._move_chunk(i + 1, -1)
-    
+
 
     @overload
     def __getitem__(self, index: slice) -> MutableSequence[float]:
@@ -126,7 +144,7 @@ class FileFloatList(MutableSequence[float]):
     @overload
     def __getitem__(self, index: int) -> float:
         ...
-    
+
     def __getitem__(self, index: int|slice):
 
         if type(index) is slice:
@@ -138,7 +156,7 @@ class FileFloatList(MutableSequence[float]):
                 start = 0
             else:
                 start = min(index.start, self._size)
-            
+
 
             if index.stop is None:
                 stop = self._size
@@ -146,14 +164,14 @@ class FileFloatList(MutableSequence[float]):
                 stop = min(index.stop, self._size)
 
             return self._data[start:stop:index.step].tolist()
-        
+
         elif type(index) is int:
 
             if (index < 0 or index >= self._size):
                 raise IndexError()
 
             return self._data[index]
-        
+
         else:
             raise ValueError()
 
@@ -177,18 +195,32 @@ class FileFloatList(MutableSequence[float]):
     @overload
     def __delitem__(self, index: slice) -> None:
         ...
-    
+
     def __delitem__(self, index):
 
         if type(index) is int:
 
             if (index < 0 or index >= self._size):
                 raise IndexError()
-        
+
             self._move_chunk(index + 1, -1)
 
         elif type(index) is slice:
-            self._move_chunk(index.stop, index.start - index.stop)
+
+            start = 0
+            stop  = 0
+
+            if index.start is None:
+                start = 0
+            else:
+                start = min(index.start, self._size)
+
+            if index.stop is None:
+                stop = self._size
+            else:
+                stop = min(index.stop, self._size)
+
+            self._move_chunk(stop, start - stop)
 
         else:
             raise ValueError()
@@ -202,8 +234,21 @@ class FileNDList(MutableSequence[np.ndarray]):
     def __init__(self, dtype = float):
 
         self._size  = 0
-        self._temp  = tempfile.TemporaryFile()
+        self._temp  = tempfile.NamedTemporaryFile(dir=os.path.curdir)
         self._file  = h5py.File(name=self._temp, mode="a")
+
+
+    def __del__(self):
+
+        try:
+            self._file.close()
+        except:
+            ...
+
+        try:
+            self._temp.close()
+        except:
+            ...
 
 
     def copy(self):
@@ -211,7 +256,7 @@ class FileNDList(MutableSequence[np.ndarray]):
 
 
     def append(self, __object: np.ndarray):
-        data    = self._file.create_dataset(name="%d" % self._size, shape=__object.shape, dtype=__object.dtype)
+        data    = self._file.create_dataset(name="%d" % self._size, shape=__object.shape, dtype=__object.dtype, chunks=True)
         data[:] = __object[:]
         self._size += 1
 
@@ -233,23 +278,23 @@ class FileNDList(MutableSequence[np.ndarray]):
 
 
     def index(self, __value, __start=0, __stop=sys.maxsize):
-        
+
         for i in range(__start, min(self._size, __stop)):
             if self[i] == __value:
                 return i
-        
+
         return -1
 
 
     def count(self, __value):
-        
+
         count = 0
 
         for thing in self:
 
             if (thing == __value):
                 count += 1
-            
+
         return count
 
 
@@ -264,7 +309,12 @@ class FileNDList(MutableSequence[np.ndarray]):
 
             for i in range(self._size - 1, start - 1, -1):
 
-                data    = self._file.create_dataset(name="%d" % (i + spaces), shape=self[i].shape, dtype=self[i].dtype)
+                new_name = "%d" % (i + spaces)
+
+                if new_name in self._file:
+                    del self._file[new_name]
+
+                data    = self._file.create_dataset(name=new_name, shape=self[i].shape, dtype=self[i].dtype, chunks=True)
                 data[:] = self[i][:]
 
                 del self._file["%d" % i]
@@ -273,7 +323,12 @@ class FileNDList(MutableSequence[np.ndarray]):
 
             for i in range(start, self._size, +1):
 
-                data    = self._file.create_dataset(name="%d" % (i + spaces), shape=self[i].shape, dtype=self[i].dtype)
+                new_name = "%d" % (i + spaces)
+
+                if new_name in self._file:
+                    del self._file[new_name]
+
+                data    = self._file.create_dataset(name=new_name, shape=self[i].shape, dtype=self[i].dtype, chunks=True)
                 data[:] = self[i][:]
 
                 del self._file["%d" % i]
@@ -281,26 +336,44 @@ class FileNDList(MutableSequence[np.ndarray]):
         self._size = new_size
 
     def insert(self, __index, __object):
-        
+
         self._move_chunk(__index, +1)
         self[__index] = __object
 
 
 
     def remove(self, __value):
-        
+
         for i in range(0, self._size):
             if self[i] == __value:
                 self._move_chunk(i + 1, -1)
-    
+
     def __getitem__(self, index):
 
         if type(index) is slice:
 
-            (start, stop, step) = index.indices(self._size)
-            stop = min(self._size, stop)
-            ret  = []
-            for i in range(start, stop - start, step):
+            start = 0
+            stop  = 0
+            step  = 1
+            ret   = []
+
+            if index.start is None:
+                start = 0
+            else:
+                start = min(index.start, self._size)
+
+            if index.stop is None:
+                stop = self._size
+            else:
+                stop = min(index.stop, self._size)
+
+            if index.step is None:
+                step = 1
+            else:
+                step = index.step
+
+
+            for i in range(start, stop, step):
                 ret.append(self[i])
 
             return ret
@@ -324,17 +397,17 @@ class FileNDList(MutableSequence[np.ndarray]):
         if key in self._file:
             del self._file[key]
 
-        data    = self._file.create_dataset(name="%d" % index, shape=value.shape, type=value.dtype)
+        data    = self._file.create_dataset(name="%d" % index, shape=value.shape, type=value.dtype, chunks=True)
         data[:] = value[:]
-        
-    
+
+
     def __delitem__(self, index):
 
         if type(index) is int:
 
             if (index < 0 or index >= self._size):
                 raise IndexError()
-        
+
             self._move_chunk(index + 1, -1)
 
         elif type(index) is slice:
